@@ -5,10 +5,10 @@ var prev_state;
 var elapsed;
 var last_timestamp = null;
 var lastfm = require('lastfm').LastFmNode;
-var token =
+var token = null;
 var lf = new lastfm({
-	api_key:,    // sign-up for a key at http://www.last.fm/api
-	secret:,
+	api_key: null,    // sign-up for a key at http://www.last.fm/api
+	secret: null,
 	useragent: 'MPD/v0.17 Music player daemon' // optional. defaults to lastfm-node.
 });
 var handle_pause = function(result){
@@ -51,16 +51,16 @@ var handle_idle_result = function(lfs, c){
 	if(c.changed != "player")
 		return main_loop(lfs);
 	console.log(c.changed);
-	mpd.send('status', function(result, last){
-		console.log(result);
-		if(result.state != prev_state){
-			if(result.state == 'pause'){
-				handle_pause(result);
+	mpd.send('status', function(status_result, last){
+		console.log(status_result);
+		if(status_result.state != prev_state){
+			if(status_result.state == 'pause'){
+				handle_pause(status_result);
 				return main_loop(lfs);
 			}
 			last_timestamp = process.hrtime();
 		}
-		prev_state = result.state;
+		prev_state = status_result.state;
 		/*format
 		  { file: 'midori/Midori/2008 - Live!! (Live at Hibiya Yagai Ongakudo, June 22, 2008)/07 POP.mp3',
 		  'Last-Modified': '2013-03-15T17:13:59Z',
@@ -79,13 +79,14 @@ var handle_idle_result = function(lfs, c){
 			console.log("range " + prev_range);
 			if(result.file != prev_song || result.Range != prev_range){
 				var duration = process.hrtime(last_timestamp);
+				last_timestamp = process.hrtime();
 				elapsed += duration[0] + duration[1]/1000000000;
 				console.log(elapsed + "seconds played");
 				if(elapsed >= 0.8*song_duration){
 					//Scrobble old song
 					console.log("Scrobbling "+prev_song_des.track);
+					prev_song_des.timestamp = (Date.now() / 1000).toFixed(0);
 					var lfu = lf.update('scrobble', lfs, prev_song_des);
-					prev_song_des.timestamp = Date.now() / 1000;
 					lfu.on('success', lastfm_success(prev_song_des));
 					lfu.on('retrying', lastfm_retry(prev_song_des));
 					lfu.on('error', lastfm_error(prev_song_des));
@@ -95,7 +96,7 @@ var handle_idle_result = function(lfs, c){
 					artist: smart_artist(result),
 					track: result.Title,
 					album: result.Album,
-					trackNumber: result.Track,
+					trackNumber: parseInt(result.Track),
 					duration: result.Time,
 					albumArtist: result.AlbumArtist,
 				};
@@ -105,9 +106,13 @@ var handle_idle_result = function(lfs, c){
 				lfu.on('retrying', lastfm_retry(prev_song_des));
 				lfu.on('error', lastfm_error(prev_song_des));
 				prev_song = result.file;
+				prev_range = result.Range;
 				song_duration = result.Time;
+				elapsed = 0;
 			}else{
 				console.log("Same song");
+				last_timestamp = process.hrtime();
+				elapsed = parseFloat(status_result.elapsed);
 			}
 			return main_loop(lfs);
 		});
@@ -122,12 +127,13 @@ var main_loop = function(lfs){
 }
 var first_run = function(lfs){
 	console.log("first_run()");
+	console.log(lfs.key);
 	mpd.send('currentsong', function(result, last){
 		prev_song_des =  {
 			artist: smart_artist(result),
 			track: result.Title,
 			album: result.Album,
-			trackNumber: result.Track,
+			trackNumber: parseInt(result.Track),
 			duration: result.Time,
 			albumArtist: result.AlbumArtist,
 		};
@@ -146,13 +152,21 @@ var first_run = function(lfs){
 		});
 	});
 }
+var session_key = null;
 mpd.on('connect', function(err){
 	if(err){
 		console.log(err);
 		return;
 	}
-	var lfs = lf.session();
-	lfs.authorise(token);
+	var lfs;
+	if(session_key == null){
+		console.log("No key presented");
+		lfs = lf.session();
+		lfs.authorise(token);
+	}else{
+		lfs = lf.session("somebody", session_key);
+		setTimeout(function(){first_run(lfs);}, 0);
+	}
 	lfs.on('authorised', first_run);
 	lfs.on('error', function(t, err){
 		console.log(err);

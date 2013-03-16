@@ -1,16 +1,14 @@
 var _mpd=require('./mpd.js');
-var mpd = _mpd.connect(6600);
 var prev_song, prev_song_des, song_duration, prev_range;
 var prev_state;
 var elapsed;
 var last_timestamp = null;
 var lastfm = require('lastfm').LastFmNode;
-var token = null;
-var lf = new lastfm({
-	api_key: null,    // sign-up for a key at http://www.last.fm/api
-	secret: null,
-	useragent: 'MPD/v0.17 Music player daemon' // optional. defaults to lastfm-node.
+var rl = require('readline').createInterface({
+	input: process.stdin,
+	output: process.stdout
 });
+
 var handle_pause = function(result){
 	elapsed = parseFloat(result.elapsed);
 	last_timestamp = process.hrtime();
@@ -20,13 +18,13 @@ var handle_pause = function(result){
 var lastfm_success = function(song){
 	return function(){
 		console.log(song);
-		console.log(song.timestamp ? "Scrobbled " : "Sent nowplaying " +
+		console.log((song.timestamp ? "Scrobbled " : "Sent nowplaying ") +
 			    song.track + " successful");
 	};
 }
 var lastfm_error = function(song){
 	return function(t, err){
-		console.log(song.timestamp ? "Scrobbled " : "Sent nowplaying " +
+		console.log((song.timestamp ? "Scrobbled " : "Sent nowplaying ") +
 			    song.track + " failed");
 		console.log(t);
 		console.log(err);
@@ -34,7 +32,7 @@ var lastfm_error = function(song){
 }
 var lastfm_retry = function(song){
 	return function(retry){
-		console.log(song.timestamp ? "Scrobbled " : "Sent nowplaying " +
+		console.log((song.timestamp ? "Scrobbled " : "Sent nowplaying ") +
 			    song.track + " failed");
 		console.log(retry.error + " " + retry.message);
 		console.log("Will retry in " + retry.delay/1000 + " seconds");
@@ -82,7 +80,7 @@ var handle_idle_result = function(lfs, c){
 				last_timestamp = process.hrtime();
 				elapsed += duration[0] + duration[1]/1000000000;
 				console.log(elapsed + "seconds played");
-				if(elapsed >= 0.8*song_duration){
+				if(elapsed >= parseFloat(cfg.scrobble_thershold)*song_duration){
 					//Scrobble old song
 					console.log("Scrobbling "+prev_song_des.track);
 					prev_song_des.timestamp = (Date.now() / 1000).toFixed(0);
@@ -127,6 +125,7 @@ var main_loop = function(lfs){
 }
 var first_run = function(lfs){
 	console.log("first_run()");
+	console.log("Write config file");
 	console.log(lfs.key);
 	mpd.send('currentsong', function(result, last){
 		prev_song_des =  {
@@ -152,26 +151,94 @@ var first_run = function(lfs){
 		});
 	});
 }
-var session_key = null;
-mpd.on('connect', function(err){
-	if(err){
-		console.log(err);
-		return;
-	}
-	var lfs;
-	if(session_key == null){
-		console.log("No key presented");
-		lfs = lf.session();
-		lfs.authorise(token);
-	}else{
-		lfs = lf.session("somebody", session_key);
-		setTimeout(function(){first_run(lfs);}, 0);
-	}
-	lfs.on('authorised', first_run);
-	lfs.on('error', function(t, err){
-		console.log(err);
-		console.log(t);
-		mpd.end();
-		return;
+var mpd_connected;
+var mpd_connect = function(lfs){
+	console.log("mpd");
+	if(mpd_connected)
+		return first_run(lfs);
+	mpd.on('connect',function(){first_run(lfs);});
+}
+var get_session_key = function(){
+	console.log(lf);
+	var lfr = lf.request('auth.getToken', {signed:true});
+	lfr.on('success', function(j){
+		rl.write("Here, open this link: http://www.last.fm/api/auth/?api_key="+lf.api_key+"&token="+j.token+"\n");
+		rl.question("Press Enter when you are done", function(yes){
+			var lfs = lf.session();
+			console.log("a");
+			lfs.authorise(j.token);
+			lfs.on('authorised', function(){
+				console.log("authorised");
+				cfg.user_name = lfs.user;
+				cfg.session_key = lfs.key;
+				var tmp = JSON.stringify(cfg, null, "\t");
+				fs.writeFile(".mpdscribble.js", tmp);
+				mpd_connect(lfs);
+			});
+			lfs.on('error', function(t, err){
+				console.log("failed to get session_key");
+				console.log(err);
+				console.log(t);
+				mpd.end();
+				return;
+			});
+		});
 	});
+	lfr.on('error', function(err){
+		console.log("request error");
+		console.log(err);
+	});
+}
+var fs=require("fs");
+var buf = fs.readFileSync("./.mpdscribble.js");
+var cfg = buf.toString();
+cfg = cfg.replace(/^\/\/.*$/, "");
+cfg = cfg.replace(/\n/g, "");
+console.log(cfg);
+try{
+	cfg = JSON.parse(cfg);
+	console.log(cfg);
+}catch(err){
+	console.log("Failed to read config "+err);
+	return;
+}
+if(!cfg.api_key || !cfg.secret){
+	console.log("API Key & secret not specified");
+	return;
+}
+var mpd;
+if(!cfg.mpd_socket){
+	var host = process.env.MPD_HOST;
+	var port;
+	if(!host.match(/^\//)){
+		port = process.env.MPD_PORT;
+		mpd = _mpd.connect({port: port, host:host});
+	}else
+		mpd = _mpd.connect({path: host});
+}else{
+	if(cfg.mpd_socket.match(/^\//)){
+		mpd = _mpd.connect({path: cfg.mpd_socket})
+	}else{
+		if(cfg.mpd_socket.match(':')){
+			var b = cfg.mpd_socket.split(':');
+			mpd = _mpd.connect({port:b[1], host:b[0]});
+		}else
+			mpd = _mpd.connect({port:cfg.mpd_socket});
+	}
+}
+mpd.on('connect', function(err){
+	console.log("mpd.connect");
+	mpd_connected = true;
 });
+mpd.on('error', function(er){
+	console.log(er);
+});
+var lf = new lastfm({
+	api_key: cfg.api_key,
+	secret: cfg.secret,
+	useragent: 'MPD/v0.17 Music player daemon'
+});
+if(!cfg.session_key || !cfg.user_name)
+	get_session_key();
+else
+	mpd_connect(lf.session(cfg.user_name, cfg.session_key));

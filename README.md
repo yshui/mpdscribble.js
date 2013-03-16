@@ -7,3 +7,6 @@ Require lastfm-node. Install it using:
 ## Todo
 
 * Be user friendly.
+* Clear the ugly code.
+* Read config file from multiple positions.
+* Remove console.log()s.

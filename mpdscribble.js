@@ -51,11 +51,13 @@ var handle_idle_result = function(lfs, c){
 	console.log(c.changed);
 	mpd.send('status', function(status_result, last){
 		console.log(status_result);
+		console.log("prev:"+prev_state+"now:"+status_result.state);
 		if(status_result.state != prev_state){
 			if(status_result.state == 'pause'){
 				handle_pause(status_result);
 				return main_loop(lfs);
 			}
+			console.log("Aoldtimestamp:"+last_timestamp.toString());
 			last_timestamp = process.hrtime();
 		}
 		prev_state = status_result.state;
@@ -75,10 +77,15 @@ var handle_idle_result = function(lfs, c){
 			console.log(result);
 			console.log("song file " + prev_song);
 			console.log("range " + prev_range);
-			if(result.file != prev_song || result.Range != prev_range){
-				var duration = process.hrtime(last_timestamp);
-				last_timestamp = process.hrtime();
-				elapsed += duration[0] + duration[1]/1000000000;
+			console.log("Boldtimestamp:"+last_timestamp.toString());
+			var duration = process.hrtime(last_timestamp);
+			last_timestamp = process.hrtime();
+			console.log(duration);
+			elapsed += duration[0] + duration[1]/1000000000;
+			var now_elapsed = parseFloat(status_result.elapsed);
+			console.log("now:"+now_elapsed+"old:"+elapsed);
+			if(result.file != prev_song || result.Range != prev_range
+			   || now_elapsed < elapsed) {
 				console.log(elapsed + "seconds played");
 				if(elapsed >= parseFloat(cfg.scrobble_thershold)*song_duration){
 					//Scrobble old song
@@ -94,11 +101,13 @@ var handle_idle_result = function(lfs, c){
 					artist: smart_artist(result),
 					track: result.Title,
 					album: result.Album,
-					trackNumber: parseInt(result.Track),
 					duration: result.Time,
-					albumArtist: result.AlbumArtist,
+					albumArtist: result.AlbumArtist ? result.AlbumArtist : smart_artist(result),
 				};
+				if (result.Track)
+					prev_song_des.trackNumber = parseInt(result.Track);
 				console.log("nowplaying "+prev_song_des.track);
+				console.log(prev_song_des);
 				var lfu = lf.update('nowplaying', lfs, prev_song_des);
 				lfu.on('success', lastfm_success(prev_song_des));
 				lfu.on('retrying', lastfm_retry(prev_song_des));
@@ -109,6 +118,7 @@ var handle_idle_result = function(lfs, c){
 				elapsed = 0;
 			}else{
 				console.log("Same song");
+				console.log("Coldtimestamp:"+last_timestamp.toString());
 				last_timestamp = process.hrtime();
 				elapsed = parseFloat(status_result.elapsed);
 			}
@@ -132,10 +142,11 @@ var first_run = function(lfs){
 			artist: smart_artist(result),
 			track: result.Title,
 			album: result.Album,
-			trackNumber: parseInt(result.Track),
 			duration: result.Time,
-			albumArtist: result.AlbumArtist,
+			albumArtist: result.AlbumArtist ? result.AlbumArtist : smart_artist(result),
 		};
+		if (result.Track)
+			prev_song_des.trackNumber = parseInt(result.Track);
 		var lfu = lf.update('nowplaying', lfs, prev_song_des);
 		lfu.on('success', lastfm_success(prev_song_des));
 		lfu.on('retrying', lastfm_retry(prev_song_des));
@@ -192,7 +203,7 @@ var get_session_key = function(){
 var fs=require("fs");
 var buf = fs.readFileSync("./.mpdscribble.js");
 var cfg = buf.toString();
-cfg = cfg.replace(/^\/\/.*$/, "");
+cfg = cfg.replace(/\/\/.*\n/g, "");
 cfg = cfg.replace(/\n/g, "");
 console.log(cfg);
 try{
